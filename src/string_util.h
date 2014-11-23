@@ -21,7 +21,7 @@
 #include <vector>
 #include <locale>
 #include <algorithm>
-#include <functional>
+#include <xfunctional>
 #include <iostream>
 
 
