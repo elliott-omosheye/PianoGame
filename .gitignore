@@ -27,8 +27,10 @@
 *.out
 *.app
 
-Debug/
+*/Debug*
 *.sdf
 *.opensdf
 *.suo
 *.vcxproj.user
+*.tlog
+Debug/
