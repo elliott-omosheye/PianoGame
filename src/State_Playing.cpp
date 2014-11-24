@@ -24,6 +24,8 @@ using namespace std;
 
 #include "libmidi/MidiComm.h"
 
+string userinput;
+string song_notes;
 void PlayingState::SetupNoteState()
 {
    TranslatedNoteSet old = m_notes;
@@ -93,7 +95,8 @@ void PlayingState::Init()
 
    // Hide the mouse cursor while we're playing
    Compatible::HideMouseCursor();
-
+     song_notes = "";
+userinput = "";
    ResetSong();
 }
 
@@ -170,8 +173,8 @@ double PlayingState::CalculateScoreMultiplier() const
 
 void PlayingState::Listen()
 {
-   if (!m_state.midi_in) return;
 
+   if (!m_state.midi_in) return;
    while (m_state.midi_in->KeepReading())
    {
       microseconds_t cur_time = m_state.midi->GetSongPositionInMicroseconds();
@@ -187,7 +190,7 @@ void PlayingState::Listen()
       ev.ShiftNote(m_note_offset);
 
       string note_name = MidiEvent::NoteName(ev.NoteNumber());
-
+	  userinput+= note_name;
       // On key release we have to look for existing "active" notes and turn them off.
       if (ev.Type() == MidiEventType_NoteOff || ev.NoteVelocity() == 0)
       {
@@ -320,6 +323,7 @@ void PlayingState::Update()
    // Our delta milliseconds on the first frame after state start is extra
    // long because we just reset the MIDI.  By skipping the "Play" that
    // update, we don't have an artificially fast-forwarded start.
+
    if (!m_first_update)
    {
       Play(delta_microseconds);
@@ -335,6 +339,7 @@ void PlayingState::Update()
    while (i != m_notes.end())
    {
       TranslatedNoteSet::iterator note = i++;
+	  		 //greedy string
 
       const microseconds_t window_end = note->start + (KeyboardDisplay::NoteWindowLength / 2);
 
@@ -342,7 +347,6 @@ void PlayingState::Update()
       {
          TranslatedNote note_copy = *note;
          note_copy.state = UserMissed;
-         
          m_notes.erase(note);
          m_notes.insert(note_copy);
          
@@ -354,11 +358,11 @@ void PlayingState::Update()
 
       if (note->end < cur_time && window_end < cur_time)
       {
+		 song_notes += MidiEvent::NoteName(note->note_id);
          if (note->state == UserMissed)
          {
             // They missed a note, reset the combo counter
             m_current_combo = 0;
-
             m_state.stats.notes_user_could_have_played++;
             m_state.stats.speed_integral += m_state.song_speed;
          }
@@ -389,7 +393,7 @@ void PlayingState::Update()
    {
       m_show_duration += 250000;
 
-      const static microseconds_t MaxShowDuration = 10000000;
+      const static microseconds_t MaxShowDuration = 20000000;
       if (m_show_duration > MaxShowDuration) m_show_duration = MaxShowDuration;
    }
 
@@ -421,11 +425,12 @@ void PlayingState::Update()
 
    if (m_state.midi->IsSongOver())
    {
+	   cout << song_notes << endl;
       if (m_state.midi_out) m_state.midi_out->Reset();
       if (m_state.midi_in) m_state.midi_in->Reset();
 
       if (m_state.midi_in && m_any_you_play_tracks) ChangeState(new StatsState(m_state));
-      else ChangeState(new TrackSelectionState(m_state));
+      else ChangeState(new TrackSelectionState(m_state));	
 
       return;
    }
