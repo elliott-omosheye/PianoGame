@@ -339,7 +339,6 @@ void PlayingState::Update()
    while (i != m_notes.end())
    {
       TranslatedNoteSet::iterator note = i++;
-	  		 //greedy string
 
       const microseconds_t window_end = note->start + (KeyboardDisplay::NoteWindowLength / 2);
 
@@ -358,7 +357,9 @@ void PlayingState::Update()
 
       if (note->end < cur_time && window_end < cur_time)
       {
+		 //greedy string
 		 song_notes += MidiEvent::NoteName(note->note_id);
+		 song_notes += " ";
          if (note->state == UserMissed)
          {
             // They missed a note, reset the combo counter
@@ -426,6 +427,7 @@ void PlayingState::Update()
    if (m_state.midi->IsSongOver())
    {
 	   cout << song_notes << endl;
+
       if (m_state.midi_out) m_state.midi_out->Reset();
       if (m_state.midi_in) m_state.midi_in->Reset();
 
@@ -434,6 +436,50 @@ void PlayingState::Update()
 
       return;
    }
+}
+
+int LevenshteinDistance(string s, string t)
+{
+	typedef unsigned int uint;
+    // degenerate cases
+    if (s == t) return 0;
+	if (s.length() == 0) return t.length();
+    if (t.length() == 0) return s.length();
+ 
+    // create two work vectors of integer distances
+	const int arraySize = t.length()+1;
+	vector<int> v0(arraySize,0);
+	vector<int> v1(arraySize,0);
+ 
+    // initialize v0 (the previous row of distances)
+    // this row is A[0][i]: edit distance for an empty s
+    // the distance is just the number of characters to delete from t
+	for (uint i = 0; i < arraySize; i++){
+        v0[i] = i;
+	}
+ 
+    for (uint i = 0; i < s.length(); i++)
+    {
+        // calculate v1 (current row distances) from the previous row v0
+ 
+        // first element of v1 is A[i+1][0]
+        //   edit distance is delete (i+1) chars from s to match empty t
+        v1[0] = i + 1;
+ 
+        // use formula to fill in the rest of the row
+        for (uint j = 0; j < t.length(); j++)
+        {
+            auto cost = (s[i] == t[j]) ? 0 : 1;
+			v1[j + 1] = min(min(v1[j] + 1, v0[j + 1] + 1), v0[j] + cost);
+        }
+ 
+        // copy v1 (current row) to v0 (previous row) for next iteration
+		for (uint j = 0; j < arraySize; j++){
+            v0[j] = v1[j];
+		}
+    }
+ 
+    return v1[t.length()];
 }
 
 void PlayingState::Draw(Renderer &renderer) const
@@ -480,7 +526,7 @@ void PlayingState::Draw(Renderer &renderer) const
    renderer.DrawTga(GetTexture(PlayStatus),  Layout::ScreenMarginX - 1,   text_y);
    renderer.DrawTga(GetTexture(PlayStatus2), Layout::ScreenMarginX + 273, text_y);
 
-   wstring multiplier_text = WSTRING(fixed << setprecision(1) << CalculateScoreMultiplier());
+   wstring multiplier_text = WSTRING(fixed << setprecision(1) << LevenshteinDistance(userinput,song_notes));
    wstring speed_text = WSTRING(m_state.song_speed << "%");
 
    TextWriter score(Layout::ScreenMarginX + 92, text_y + 3, renderer, false, Layout::ScoreFontSize);
