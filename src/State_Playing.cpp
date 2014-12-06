@@ -24,20 +24,36 @@ using namespace std;
 
 #include "libmidi/MidiComm.h"
 
-string userinput;
-string song_notes;
+vector<string> user_notes;
+vector<string> song_notes;
+
+std::set<microseconds_t> played;
+bool rubato = false;
+
+bool pageSwitch = true;
+vector<microseconds_t> song_notes_time;
+
+struct match {
+	int firstPos, secondPos, length;
+	match(int first,int second,int third){
+		firstPos = first;
+		secondPos = second;
+		length = third;
+	}
+};
+
 void PlayingState::SetupNoteState()
 {
    TranslatedNoteSet old = m_notes;
    m_notes.clear();
-
+   
    for (TranslatedNoteSet::const_iterator i = old.begin(); i != old.end(); ++i)
    {
       TranslatedNote n = *i;
 
       n.state = AutoPlayed;
       if (m_state.track_properties[n.track_id].mode == Track::ModeYouPlay) n.state = UserPlayable;
-      
+
       m_notes.insert(n);
    }
 }
@@ -66,6 +82,11 @@ void PlayingState::ResetSong()
 
    m_note_offset = 0;
    m_max_allowed_title_alpha = 1.0;
+
+   //clear rubato state
+   user_notes.clear();
+   song_notes.clear();
+   played.clear();
 }
 
 PlayingState::PlayingState(const SharedState &state)
@@ -95,9 +116,9 @@ void PlayingState::Init()
 
    // Hide the mouse cursor while we're playing
    Compatible::HideMouseCursor();
-     song_notes = "";
-userinput = "";
    ResetSong();
+   song_notes.reserve(m_state.stats.total_note_count);
+   user_notes.reserve(m_state.stats.total_note_count);
 }
 
 PlayingState::~PlayingState()
@@ -175,6 +196,7 @@ void PlayingState::Listen()
 {
 
    if (!m_state.midi_in) return;
+   string userinput = "a";
    while (m_state.midi_in->KeepReading())
    {
       microseconds_t cur_time = m_state.midi->GetSongPositionInMicroseconds();
@@ -292,6 +314,46 @@ void PlayingState::Listen()
       m_state.stats.total_notes_user_pressed++;
       m_keyboard->SetKeyActive(note_name, true, note_color);
    }
+   user_notes.push_back(userinput);
+}
+
+template <typename Type>
+vector<match> GreedyStringTiling(Type A, Type B){
+	std::vector<bool> marksA(A.size(),false);
+	std::vector<bool> marksB(B.size(),false);
+	vector<match> tiles;
+	int maxmatch;
+	do
+	{
+		maxmatch = 3;
+		vector<match> matches;
+		for (int i = 0; i < marksA.size(); i++){
+			if (marksA[i] == false){
+				for (int c = 0; c < marksB.size(); c++){
+					if (marksB[c] == false){
+						int j = 0;
+						while(A[i+j] == B[c+j] && !marksA[i+j] && !marksB[c+j]) {j++;}
+						match newmatch = match(i,c,j);
+						if (j == maxmatch){
+							matches.push_back(newmatch);
+						} else if(j > maxmatch){
+							matches.clear();
+							matches.push_back(newmatch);
+							maxmatch = j;
+						}
+					}
+				}
+			}
+		}
+		for (unsigned int i = 0; i < matches.size(); i++){
+			for (int j = 0; j < (maxmatch -1); j++){
+				marksA[(matches[i]).firstPos+j] = true;
+				marksB[(matches[i]).secondPos+j] = true;
+			}
+			tiles.push_back(matches[i]);
+		}
+	} while (maxmatch > 3);
+	return tiles;
 }
 
 void PlayingState::Update()
@@ -324,23 +386,33 @@ void PlayingState::Update()
    // long because we just reset the MIDI.  By skipping the "Play" that
    // update, we don't have an artificially fast-forwarded start.
 
-   if (!m_first_update)
+   if (!m_first_update && !pageSwitch)
    {
       Play(delta_microseconds);
       Listen();
+   } else if (pageSwitch){
+	   vector<match> tiles = GreedyStringTiling(user_notes,song_notes);
+	   if (tiles.size() > 1){
+		   int pos = tiles[0].secondPos;
+			int newTime = song_notes_time[pos];
+			Play(newTime - m_state.midi->GetSongPositionInMicroseconds());
+			user_notes.clear();
+	   }
    }
    m_first_update = false;
-
 
    microseconds_t cur_time = m_state.midi->GetSongPositionInMicroseconds();
 
    // Delete notes that are finished playing (and are no longer available to hit)
    TranslatedNoteSet::iterator i = m_notes.begin();
+   string songinput = "";
+
    while (i != m_notes.end())
    {
       TranslatedNoteSet::iterator note = i++;
-
+	  const microseconds_t window_start = note->start - (KeyboardDisplay::NoteWindowLength / 2);
       const microseconds_t window_end = note->start + (KeyboardDisplay::NoteWindowLength / 2);
+	  //OutputDebugStringA(window_start + " " + window_end + " " + cur_time);
 
       if (m_state.midi_in && note->state == UserPlayable && window_end <= cur_time)
       {
@@ -352,14 +424,16 @@ void PlayingState::Update()
          // Re-connect the (now-invalid) iterator to the replacement
          note = m_notes.find(note_copy);
       }
+	  if (window_end <= cur_time && played.find(note->note_id+note->start) == played.end()){
+		  //normally note should have been played
+		 played.insert(note->note_id+note->start);
+		 songinput += MidiEvent::NoteName(note->note_id);
+		}
 
       if (note->start > cur_time) break;
-
+	  
       if (note->end < cur_time && window_end < cur_time)
       {
-		 //greedy string
-		 song_notes += MidiEvent::NoteName(note->note_id);
-		 song_notes += " ";
          if (note->state == UserMissed)
          {
             // They missed a note, reset the combo counter
@@ -371,7 +445,10 @@ void PlayingState::Update()
          m_notes.erase(note);
       }
    }
-
+   if (songinput!= "") {
+	   song_notes_time.push_back(cur_time);
+	   song_notes.push_back(songinput);
+   }
    if(IsKeyPressed(KeyPlus))
    {
       m_note_offset += 12;
@@ -426,7 +503,7 @@ void PlayingState::Update()
 
    if (m_state.midi->IsSongOver())
    {
-	   cout << song_notes << endl;
+	   cerr << song_notes.front() << endl;
 
       if (m_state.midi_out) m_state.midi_out->Reset();
       if (m_state.midi_in) m_state.midi_in->Reset();
@@ -438,27 +515,28 @@ void PlayingState::Update()
    }
 }
 
-int LevenshteinDistance(string s, string t)
+template <typename Type>
+int LevenshteinDistance(Type s, Type t)
 {
 	typedef unsigned int uint;
     // degenerate cases
     if (s == t) return 0;
-	if (s.length() == 0) return t.length();
-    if (t.length() == 0) return s.length();
+	if (s.size() == 0) return t.size();
+    if (t.size() == 0) return s.size();
  
     // create two work vectors of integer distances
-	const int arraySize = t.length()+1;
+	const int arraySize = t.size()+1;
 	vector<int> v0(arraySize,0);
 	vector<int> v1(arraySize,0);
  
     // initialize v0 (the previous row of distances)
     // this row is A[0][i]: edit distance for an empty s
     // the distance is just the number of characters to delete from t
-	for (uint i = 0; i < arraySize; i++){
+	for (int i = 0; i < arraySize; i++){
         v0[i] = i;
 	}
  
-    for (uint i = 0; i < s.length(); i++)
+    for (uint i = 0; i < s.size(); i++)
     {
         // calculate v1 (current row distances) from the previous row v0
  
@@ -467,19 +545,19 @@ int LevenshteinDistance(string s, string t)
         v1[0] = i + 1;
  
         // use formula to fill in the rest of the row
-        for (uint j = 0; j < t.length(); j++)
+        for (uint j = 0; j < t.size(); j++)
         {
             auto cost = (s[i] == t[j]) ? 0 : 1;
 			v1[j + 1] = min(min(v1[j] + 1, v0[j + 1] + 1), v0[j] + cost);
         }
  
         // copy v1 (current row) to v0 (previous row) for next iteration
-		for (uint j = 0; j < arraySize; j++){
+		for (int j = 0; j < arraySize; j++){
             v0[j] = v1[j];
 		}
     }
  
-    return v1[t.length()];
+    return v1[t.size()];
 }
 
 void PlayingState::Draw(Renderer &renderer) const
@@ -526,7 +604,7 @@ void PlayingState::Draw(Renderer &renderer) const
    renderer.DrawTga(GetTexture(PlayStatus),  Layout::ScreenMarginX - 1,   text_y);
    renderer.DrawTga(GetTexture(PlayStatus2), Layout::ScreenMarginX + 273, text_y);
 
-   wstring multiplier_text = WSTRING(fixed << setprecision(1) << LevenshteinDistance(userinput,song_notes));
+   wstring multiplier_text = WSTRING(fixed << setprecision(1) << LevenshteinDistance(user_notes,song_notes));
    wstring speed_text = WSTRING(m_state.song_speed << "%");
 
    TextWriter score(Layout::ScreenMarginX + 92, text_y + 3, renderer, false, Layout::ScoreFontSize);
